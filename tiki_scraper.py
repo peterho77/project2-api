@@ -1,20 +1,14 @@
-import aiohttp
 import aiofiles
 import asyncio
 import random
-import pandas as pd
 import json
 import os
 import re
 from bs4 import BeautifulSoup
+from dotenv import load_dotenv
 
-# --- CẤU HÌNH ---
-CSV_FILE_PATH = 'products.csv'
-CSV_COLUMN_NAME = 'id'
-CHUNK_SIZE = 1000
-CONCURRENCY_LIMIT = 50  # Giới hạn số lượng request chạy cùng lúc để tránh bị block (Rate Limit)
-
-API_URL = "https://api.tiki.vn/product-detail/api/v1/products/{}"
+load_dotenv()
+api_url=os.getenv("API_URL")
 
 # Sử dụng User-Agent thực để bypass các bộ lọc bot cơ bản
 HEADERS = {
@@ -30,7 +24,6 @@ HEADERS = {
     "Sec-Fetch-Mode": "cors",
     "Sec-Fetch-Site": "same-site",
 }
-
 
 def clean_description(html_content):
     """
@@ -61,7 +54,7 @@ async def fetch_product_info(session, product_id, semaphore, max_retries=3):
                 # tránh việc 7 request cùng lao vào server một lúc.
                 await asyncio.sleep(random.uniform(0.2, 0.7))
 
-                async with session.get(API_URL.format(product_id), headers=HEADERS, timeout=15) as response:
+                async with session.get(api_url.format(product_id), headers=HEADERS, timeout=15) as response:
                     if response.status == 200:
                         data = await response.json()
                         images = data.get("images", [])
@@ -121,38 +114,3 @@ async def process_chunk(session, chunk_ids, chunk_index, semaphore):
         await f.write(json.dumps(valid_results, ensure_ascii=False, indent=4))
 
     print(f"[+] Đã lưu {len(valid_results)} sản phẩm vào {filename}")
-
-
-async def main():
-    print("Đang đọc file CSV...")
-    try:
-        df = pd.read_csv(CSV_FILE_PATH)
-        # Loại bỏ các dòng trống (NaN), ép về số thực, rồi số nguyên, rồi mới sang chuỗi
-        # Cách này an toàn để cắt bỏ hoàn toàn đuôi .0
-        product_ids = df[CSV_COLUMN_NAME].dropna().apply(lambda x: str(int(float(x)))).tolist()
-    except Exception as e:
-        print(f"Lỗi đọc file CSV: {e}")
-        return
-
-    total_ids = len(product_ids)
-    print(f"Tổng số ID cần xử lý: {total_ids}")
-
-    # Semaphore giới hạn số luồng (coroutines) gửi đi cùng một lúc
-    semaphore = asyncio.Semaphore(CONCURRENCY_LIMIT)
-
-    # Sử dụng duy nhất 1 ClientSession cho toàn bộ tiến trình để tái sử dụng TCP connection (Keep-Alive)
-    async with aiohttp.ClientSession() as session:
-        for i in range(0, total_ids, CHUNK_SIZE):
-            chunk = product_ids[i:i + CHUNK_SIZE]
-            chunk_index = (i // CHUNK_SIZE) + 1
-            print(f"> Đang xử lý Chunk {chunk_index}...")
-            await process_chunk(session, chunk, chunk_index, semaphore)
-            await asyncio.sleep(3)
-
-
-if __name__ == "__main__":
-    # Fix lỗi "Event loop is closed" trên Windows khi dùng asyncio
-    if os.name == 'nt':
-        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-
-    asyncio.run(main())
