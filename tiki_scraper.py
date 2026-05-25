@@ -5,11 +5,15 @@ import json
 import os
 import re
 import time
+import glob
 from selectolax.parser import HTMLParser
 from dotenv import load_dotenv
+from fake_useragent import UserAgent
 
+ua = UserAgent()
 load_dotenv()
 api_url=os.getenv("API_URL")
+processed_file=os.getenv("PROCESSED_FILE")
 
 # Sử dụng User-Agent thực để bypass các bộ lọc bot cơ bản
 HEADERS = {
@@ -46,9 +50,13 @@ async def fetch_product_info(session, product_id, max_retries=3):
         try:
             # Thêm một khoảng delay ngẫu nhiên nhỏ (0.2s - 0.7s) để giả lập người dùng,
             # tránh việc 50 request cùng lao vào server một lúc.
-            await asyncio.sleep(random.uniform(0.2, 0.7))
+            await asyncio.sleep(random.uniform(1.0, 3.0))
 
-            async with session.get(api_url.format(product_id), headers=HEADERS, timeout=15) as response:
+            # Tự động tạo HEADERS mới có User-Agent ngẫu nhiên cho mỗi request
+            current_headers = HEADERS.copy()
+            current_headers["User-Agent"] = ua.random
+
+            async with session.get(api_url.format(product_id), headers=current_headers, timeout=15) as response:
                 if response.status == 200:
                     data = await response.json()
                     images = data.get("images", [])
@@ -94,13 +102,28 @@ async def file_writer(result_queue, chunk_size=1000):
     buffer = []
     chunk_index = 1
 
-    # Tạo một ID phiên chạy (dựa trên thời gian) để tránh ghi đè file cũ khi chạy lại
-    session_id = int(time.time())
+    # Tìm tất cả các file có tiền tố products_chunk_ và đuôi .json
+    existing_files = glob.glob("products_chunk_*.json")
+
+    if existing_files:
+        max_idx = 0
+        for f in existing_files:
+            # Dùng Regex để tìm con số nằm ngay trước .json
+            # Ví dụ: "products_chunk_6.json" -> lấy số 6
+            # Hoặc "products_chunk_123456_6.json" -> vẫn lấy số 6
+            match = re.search(r'_(\d+)\.json$', f)
+            if match:
+                idx = int(match.group(1))
+                if idx > max_idx:
+                    max_idx = idx
+
+        # Bắt đầu đợt mới từ chỉ số lớn nhất hiện có + 1
+        chunk_index = max_idx + 1
 
     async def save_chunk(data_buffer, index):
         """Hàm phụ trợ để lưu file JSON và ghi log ID đã hoàn thành."""
         # 1. Ghi data ra file JSON
-        filename = f"products_chunk_{session_id}_{index}.json"
+        filename = f"products_chunk_{index}.json"
 
         # Tách lấy phần dữ liệu thực tế (bỏ product_id dùng để track)
         data_to_save = [item[1] for item in data_buffer]
@@ -108,8 +131,8 @@ async def file_writer(result_queue, chunk_size=1000):
         async with aiofiles.open(filename, mode='w', encoding='utf-8') as f:
             await f.write(json.dumps(data_to_save, ensure_ascii=False, indent=4))
 
-        # 2. Ghi checkpoint các ID đã lưu thành công vào file processed_ids.txt
-        async with aiofiles.open("processed_ids.txt", mode='a', encoding='utf-8') as f:
+        # 2. Ghi checkpoint các ID đã lưu thành công vào file processed_ids.csv
+        async with aiofiles.open(str(processed_file), mode='a', encoding='utf-8') as f:
             for item in data_buffer:
                 product_id = item[0]  # Lấy product_id từ tuple
                 await f.write(f"{product_id}\n")

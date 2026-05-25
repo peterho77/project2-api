@@ -1,3 +1,5 @@
+import time
+import re
 import asyncio
 import aiohttp
 import pandas as pd
@@ -25,24 +27,64 @@ def get_processed_ids():
         return set(line.strip() for line in f if line.strip())
 
 async def main():
-    print("Đang đọc file CSV...")
+    # 1. NHẬP SỐ LƯỢNG FILE MUỐN CHẠY
     try:
-        df = pd.read_csv(file_path)
-        product_ids = df[column].dropna().apply(lambda x: str(int(float(x)))).tolist()
-    except Exception as e:
-        print(f"Lỗi đọc file CSV: {e}")
+        n_files = int(input("[?] Nhập số lượng file CSV muốn chạy (VD: 2): "))
+        if n_files <= 0:
+            print("[!] Số lượng file phải lớn hơn 0.")
+            return
+    except ValueError:
+        print("[!] Lỗi: Vui lòng nhập một số nguyên hợp lệ!")
         return
 
-    # LỌC CÁC ID ĐÃ XỬ LÝ
-    processed_ids = get_processed_ids()
-    product_ids = [pid for pid in product_ids if pid not in processed_ids]
+    print("\nĐang quét tìm các file CSV...")
 
-    print(f"Tổng số ID trong file: {len(product_ids)}")
+    # 2. TÌM VÀ LỌC FILE THEO REGEX
+    file_pattern = os.getenv("CSV_FILE_PATTERN", r'^products\d+\.csv$')
+    pattern = re.compile(file_pattern)
+    matched_files = [f for f in os.listdir('.') if pattern.match(f)]
+
+    # 3. SẮP XẾP FILE THEO SỐ TỰ NHIÊN (Tránh lỗi products10 đứng trước products2)
+    def extract_number(filename):
+        match = re.search(r'\d+', filename)
+        return int(match.group()) if match else 0
+
+    matched_files.sort(key=extract_number)
+
+    # 4. CHỌN N FILE ĐẦU TIÊN THEO YÊU CẦU
+    selected_files = matched_files[:n_files]
+
+    if not selected_files:
+        print("[!] Không tìm thấy file nào khớp với định dạng 'product*.csv' trong thư mục.")
+        return
+
+    print(f"[*] Đã chọn {len(selected_files)} file để xử lý: {selected_files}")
+
+    # 5. GOM DỮ LIỆU TỪ TẤT CẢ CÁC FILE ĐÃ CHỌN
+    all_product_ids = []
+    for file in selected_files:
+        try:
+            df = pd.read_csv(file)
+            ids = df[column].dropna().apply(lambda x: str(int(float(x)))).tolist()
+            all_product_ids.extend(ids)
+        except Exception as e:
+            print(f"[!] Lỗi đọc file {file}: {e}")
+
+    # Lọc ID trùng lặp nếu lỡ có 1 sản phẩm nằm ở 2 file CSV khác nhau
+    all_product_ids = list(dict.fromkeys(all_product_ids))
+
+    # 6. LỌC CÁC ID ĐÃ ĐƯỢC CÀO TỪ TRƯỚC (CHECKPOINT)
+    processed_ids = get_processed_ids()
+    product_ids = [pid for pid in all_product_ids if pid not in processed_ids]
+
+    print(f"\n--- THỐNG KÊ DỮ LIỆU ---")
+    print(f"Tổng số ID trong {len(selected_files)} file: {len(all_product_ids)}")
     print(f"Đã xử lý trước đó: {len(processed_ids)}")
-    print(f"Số ID cần chạy tiếp: {len(product_ids)}")
+    print(f"Số ID thực tế cần chạy tiếp: {len(product_ids)}")
+    print(f"------------------------\n")
 
     if len(product_ids) == 0:
-        print("Tất cả dữ liệu đã được cào xong!")
+        print("Tất cả dữ liệu trong các file này đã được cào xong!")
         return
 
     # Khởi tạo 2 Queue
@@ -65,19 +107,30 @@ async def main():
             task = asyncio.create_task(worker(i, job_queue, result_queue, session))
             workers.append(task)
 
-        # 3. Chờ cho đến khi TẤT CẢ ID trong job_queue được lấy và xử lý xong
-        await job_queue.join()
+        try:
+            # 3. Chờ cho đến khi TẤT CẢ ID trong job_queue được lấy và xử lý xong
+            await job_queue.join()
 
-        # 4. Chờ cho đến khi TẤT CẢ kết quả trong result_queue được ghi ra file
-        await result_queue.join()
+            # 4. Chờ cho đến khi TẤT CẢ kết quả trong result_queue được ghi ra file
+            await result_queue.join()
 
-        # 5. Gửi tín hiệu (None) để báo cho file_writer biết đã hết việc và tự kết thúc
-        await result_queue.put(None)
-        await writer_task
+            # 5. Gửi tín hiệu (None) để báo cho file_writer biết đã hết việc và tự kết thúc
+            await result_queue.put(None)
+            await writer_task
 
-        # 6. Hủy các worker đang rảnh rỗi
-        for w in workers:
-            w.cancel()
+        except asyncio.CancelledError:
+            # Bắt tín hiệu khi tiến trình bị ngắt đột ngột (do Ctrl+C hoặc file test)
+            print("\n[Cảnh báo] Tiến trình bị ngắt! Đang dọn dẹp bộ nhớ...")
+            raise
+
+        finally:
+            # QUAN TRỌNG NHẤT: Tiêu diệt toàn bộ worker và writer dở dang
+            for w in workers:
+                if not w.done():
+                    w.cancel()
+
+            if not writer_task.done():
+                writer_task.cancel()
 
     print("[-] Hoàn tất tiến trình cào dữ liệu.")
 
@@ -86,5 +139,27 @@ if __name__ == "__main__":
     if os.name == 'nt':
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
-    # Khởi chạy hàm main
-    asyncio.run(main())
+    start_time = time.time()
+
+    try:
+        # Khởi chạy toàn bộ logic chính
+        asyncio.run(main())
+
+    except KeyboardInterrupt:
+        # Bắt trường hợp bạn bấm dừng bằng phím (Ctrl + C)
+        print("\n[!] Đã bấm dừng bằng tay (Ctrl+C). Tiến trình tạm nghỉ an toàn.")
+
+    except Exception as e:
+        # Bắt tất cả các lỗi ngẫu nhiên khác (mất mạng, lỗi API văng code,...)
+        print(f"\n[!] Tiến trình dừng đột ngột do lỗi: {e}")
+
+    finally:
+        end_time = time.time()
+        elapsed_seconds = end_time - start_time
+
+        hours, remainder = divmod(elapsed_seconds, 3600)
+        minutes, seconds = divmod(remainder, 60)
+
+        print("==================================================")
+        print(f"[*] Thời gian phiên chạy này: {int(hours):02d}:{int(minutes):02d}:{int(seconds):02d}")
+        print("==================================================")
