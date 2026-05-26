@@ -4,7 +4,6 @@ import random
 import json
 import os
 import re
-import time
 import glob
 from selectolax.parser import HTMLParser
 from dotenv import load_dotenv
@@ -14,6 +13,7 @@ ua = UserAgent()
 load_dotenv()
 api_url=os.getenv("API_URL")
 processed_file=os.getenv("PROCESSED_FILE")
+failed_file=os.getenv("FAILED_FILE")
 
 # Sử dụng User-Agent thực để bypass các bộ lọc bot cơ bản
 HEADERS = {
@@ -110,53 +110,87 @@ async def file_writer(result_queue, chunk_size=1000):
         for f in existing_files:
             # Dùng Regex để tìm con số nằm ngay trước .json
             # Ví dụ: "products_chunk_6.json" -> lấy số 6
-            # Hoặc "products_chunk_123456_6.json" -> vẫn lấy số 6
             match = re.search(r'_(\d+)\.json$', f)
             if match:
                 idx = int(match.group(1))
                 if idx > max_idx:
                     max_idx = idx
 
-        # Bắt đầu đợt mới từ chỉ số lớn nhất hiện có + 1
-        chunk_index = max_idx + 1
+        # KẾT THÚC VÒNG LẶP, ĐÃ TÌM ĐƯỢC max_idx (Ví dụ: 144)
+        last_file = f"products_chunk_{max_idx}.json"
 
-    async def save_chunk(data_buffer, index):
-        """Hàm phụ trợ để lưu file JSON và ghi log ID đã hoàn thành."""
-        # 1. Ghi data ra file JSON
-        filename = f"products_chunk_{index}.json"
+        # BẮT ĐẦU KIỂM TRA DUNG LƯỢNG FILE CUỐI CÙNG
+        if os.path.exists(last_file):
+            file_size = os.path.getsize(last_file)
 
-        # Tách lấy phần dữ liệu thực tế (bỏ product_id dùng để track)
-        data_to_save = [item[1] for item in data_buffer]
+            # Nếu file hoàn toàn trống (0 byte) hoặc chỉ có mảng rỗng "[]" (thường < 5 bytes)
+            if file_size < 5:
+                print(f"[*] Phát hiện {last_file} trống ({file_size} bytes). Sẽ tái sử dụng và ghi đè!")
+                chunk_index = max_idx  # Giữ nguyên số 144, KHÔNG cộng 1
+            else:
+                chunk_index = max_idx + 1  # File có dữ liệu thực sự, tạo số 145
+        else:
+            chunk_index = max_idx + 1
 
-        async with aiofiles.open(filename, mode='w', encoding='utf-8') as f:
-            await f.write(json.dumps(data_to_save, ensure_ascii=False, indent=4))
+    success_ids = []  # Chứa ID thành công
+    failed_ids = []  # Chứa ID bị lỗi (404, timeout, v.v.)
 
-        # 2. Ghi checkpoint các ID đã lưu thành công vào file processed_ids.csv
-        async with aiofiles.open(str(processed_file), mode='a', encoding='utf-8') as f:
-            for item in data_buffer:
-                product_id = item[0]  # Lấy product_id từ tuple
-                await f.write(f"{product_id}\n")
+    async def save_data(js_buf, succ_ids, fail_ids, index):
+        """Hàm phụ trợ lưu JSON và 2 file Checkpoint riêng biệt."""
 
-        print(f"[+] Đã lưu {len(data_buffer)} sản phẩm vào {filename} & cập nhật checkpoint.")
+        # 1. Lưu file JSON nếu có dữ liệu
+        if js_buf:
+            filename = f"products_chunk_{index}.json"
+            async with aiofiles.open(filename, mode='w', encoding='utf-8') as f:
+                await f.write(json.dumps(js_buf, ensure_ascii=False, indent=4))
+            print(f"[+] Đã lưu {len(js_buf)} sản phẩm vào {filename}")
 
+        # 2. Lưu ID thành công vào processed_ids.csv
+        if succ_ids:
+            async with aiofiles.open(processed_file, mode='a', encoding='utf-8') as f:
+                for pid in succ_ids:
+                    await f.write(f"{pid}\n")
+
+        # 3. Lưu ID thất bại vào failed_ids.csv
+        if fail_ids:
+            async with aiofiles.open(failed_file, mode='a', encoding='utf-8') as f:
+                for pid in fail_ids:
+                    await f.write(f"{pid}\n")
+
+    # VÒNG LẶP CHÍNH
     while True:
         item = await result_queue.get()
 
-        # Nhận được tín hiệu dừng (Poison Pill) từ hàm main
+        # Tín hiệu dừng (Poison Pill)
         if item is None:
-            if buffer:
-                # Lưu nốt những sản phẩm lẻ còn sót lại (nhỏ hơn chunk_size)
-                await save_chunk(buffer, chunk_index)
+            if buffer or success_ids or failed_ids:
+                await save_data(buffer, success_ids, failed_ids, chunk_index)
             result_queue.task_done()
             break
 
-        buffer.append(item)
+        product_id, result = item
 
-        # Khi gom đủ số lượng items (VD: 1000)
-        if len(buffer) >= chunk_size:
-            await save_chunk(buffer, chunk_index)
-            buffer.clear()  # Xóa bộ nhớ đệm để gom chunk tiếp theo
-            chunk_index += 1
+        # PHÂN LOẠI DỮ LIỆU VÀO CÁC BỘ ĐỆM
+        if result is not None:
+            buffer.append(result)
+            success_ids.append(product_id)
+        else:
+            failed_ids.append(product_id)
+
+        # Kiểm tra tổng số lượng ID đã xử lý (Cả thành công + thất bại)
+        total_processed = len(success_ids) + len(failed_ids)
+
+        if total_processed >= chunk_size:
+            await save_data(buffer, success_ids, failed_ids, chunk_index)
+
+            # Chỉ tăng số thứ tự file lên 1 NẾU thực sự có file JSON được tạo ra
+            if buffer:
+                chunk_index += 1
+
+            # Xóa sạch các bộ đệm để chuẩn bị cho mảng tiếp theo
+            buffer.clear()
+            success_ids.clear()
+            failed_ids.clear()
 
         result_queue.task_done()
 
@@ -168,10 +202,7 @@ async def worker(worker_id, job_queue, result_queue, session):
         try:
             # Lưu ý: Hàm fetch_product_info của bạn giữ nguyên
             result = await fetch_product_info(session, product_id)
-            if result:
-                # THAY ĐỔI QUAN TRỌNG: Đẩy cả product_id và result vào queue dưới dạng Tuple
-                # Để hàm file_writer biết chính xác ID nào để lưu checkpoint
-                await result_queue.put((product_id, result))
+            await result_queue.put((product_id, result))
         except Exception as e:
             print(f"[!] Lỗi ở worker {worker_id} ID {product_id}: {e}")
         finally:

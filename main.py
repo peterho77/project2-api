@@ -16,15 +16,22 @@ chunk_size=int(os.getenv("CHUNK_SIZE"))
 concurrency_limit=int(os.getenv("CONCURRENCY_LIMIT"))
 api_url=os.getenv("API_URL")
 processed_file=os.getenv("PROCESSED_FILE")
+failed_file=os.getenv("FAILED_FILE")
 
-def get_processed_ids():
-    """Đọc danh sách các ID đã xử lý từ file txt."""
-    if not os.path.exists(processed_file):
-        return set()  # Dùng set() để tra cứu tốc độ O(1)
+def get_handled_ids(file_paths):
+    """
+    Đọc danh sách các ID đã xử lý từ nhiều file (cả thành công và thất bại).
+    Dùng set() để đảm bảo tốc độ tra cứu O(1) và tự động loại bỏ ID trùng lặp.
+    """
+    handled = set()
 
-    with open(processed_file, 'r', encoding='utf-8') as f:
-        # Đọc từng dòng và xóa khoảng trắng/xuống dòng
-        return set(line.strip() for line in f if line.strip())
+    for file_path in file_paths:
+        if os.path.exists(file_path):
+            with open(file_path, 'r', encoding='utf-8') as f:
+                # Hàm update() sẽ nhồi toàn bộ ID đọc được vào set hiện tại
+                handled.update(line.strip() for line in f if line.strip())
+
+    return handled
 
 async def main():
     # 1. NHẬP SỐ LƯỢNG FILE MUỐN CHẠY
@@ -74,12 +81,12 @@ async def main():
     all_product_ids = list(dict.fromkeys(all_product_ids))
 
     # 6. LỌC CÁC ID ĐÃ ĐƯỢC CÀO TỪ TRƯỚC (CHECKPOINT)
-    processed_ids = get_processed_ids()
-    product_ids = [pid for pid in all_product_ids if pid not in processed_ids]
+    handled_ids = get_handled_ids([processed_file, failed_file])
+    product_ids = [pid for pid in all_product_ids if pid not in handled_ids]
 
     print(f"\n--- THỐNG KÊ DỮ LIỆU ---")
     print(f"Tổng số ID trong {len(selected_files)} file: {len(all_product_ids)}")
-    print(f"Đã xử lý trước đó: {len(processed_ids)}")
+    print(f"Đã xử lý trước đó: {len(handled_ids)}")
     print(f"Số ID thực tế cần chạy tiếp: {len(product_ids)}")
     print(f"------------------------\n")
 
