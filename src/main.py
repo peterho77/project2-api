@@ -4,19 +4,20 @@ import asyncio
 import aiohttp
 import pandas as pd
 import os
-from dotenv import load_dotenv
-from tiki_scraper import worker,file_writer
 
-# Nạp các biến môi trường từ file .env
-load_dotenv()
+# import from folder
+from config.settings import config
+from src.api_client import fetch_product_info
+from src.json_handler import file_writer
 
-file_path=os.getenv("CSV_FILE")
-column=os.getenv("CSV_COLUMN_NAME")
-chunk_size=int(os.getenv("CHUNK_SIZE"))
-concurrency_limit=int(os.getenv("CONCURRENCY_LIMIT"))
-api_url=os.getenv("API_URL")
-processed_file=os.getenv("PROCESSED_FILE")
-failed_file=os.getenv("FAILED_FILE")
+# config variable
+file_path = config.get("CSV_FILE")
+column = config.get("CSV_COLUMN_NAME")
+chunk_size = int(config.get("CHUNK_SIZE", 1000))
+concurrency_limit = int(config.get("CONCURRENCY_LIMIT"))
+api_url = config.get("API_URL")
+processed_file = config.get("PROCESSED_FILE")
+failed_file = config.get("FAILED_FILE")
 
 def get_handled_ids(file_paths):
     """
@@ -25,13 +26,28 @@ def get_handled_ids(file_paths):
     """
     handled = set()
 
-    for file_path in file_paths:
-        if os.path.exists(file_path):
-            with open(file_path, 'r', encoding='utf-8') as f:
+    for path in file_paths:
+        if path and os.path.exists(path):
+            with open(path, 'r', encoding='utf-8') as f:
                 # Hàm update() sẽ nhồi toàn bộ ID đọc được vào set hiện tại
                 handled.update(line.strip() for line in f if line.strip())
 
     return handled
+
+async def worker(worker_id, job_queue, result_queue, session):
+    """Worker lấy ID từ job_queue, tải dữ liệu, và đẩy vào result_queue."""
+    while True:
+        product_id = await job_queue.get()
+        try:
+            # Gọi hàm fetch_product_info từ file src/api_client.py
+            result = await fetch_product_info(session, product_id)
+            await result_queue.put((product_id, result))
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            print(f"[!] Lỗi ở worker {worker_id} ID {product_id}: {e}")
+        finally:
+            job_queue.task_done()
 
 async def main():
     # 1. NHẬP SỐ LƯỢNG FILE MUỐN CHẠY
@@ -46,10 +62,25 @@ async def main():
 
     print("\nĐang quét tìm các file CSV...")
 
-    # 2. TÌM VÀ LỌC FILE THEO REGEX
+    # 2. TÌM VÀ LỌC FILE THEO REGEX TRONG THƯ MỤC DATA/INPUT/
+    input_dir = os.path.join("data","input")  # Dùng os.path.join để tự động xử lý dấu gạch chéo (/ hoặc \) tuỳ hệ điều hành
+
+    # Kiểm tra xem thư mục có tồn tại không trước khi quét
+    if not os.path.exists(input_dir):
+        print(f"[!] Lỗi: Không tìm thấy thư mục '{input_dir}'. Vui lòng tạo thư mục và chép file vào.")
+        return
+
     file_pattern = os.getenv("CSV_FILE_PATTERN", r'^products\d+\.csv$')
     pattern = re.compile(file_pattern)
-    matched_files = [f for f in os.listdir('.') if pattern.match(f)]
+
+    # Quét trong thư mục input_dir và lưu lại ĐƯỜNG DẪN ĐẦY ĐỦ của file
+    matched_files = []
+    for f in os.listdir(input_dir):
+        if pattern.match(f):
+            # Nối thư mục và tên file lại với nhau (VD: data/input/products1.csv)
+            full_path = os.path.join(input_dir, f)
+            if os.path.isfile(full_path):  # Đảm bảo nó là file chứ không phải thư mục con
+                matched_files.append(full_path)
 
     # 3. SẮP XẾP FILE THEO SỐ TỰ NHIÊN (Tránh lỗi products10 đứng trước products2)
     def extract_number(filename):
@@ -62,7 +93,7 @@ async def main():
     selected_files = matched_files[:n_files]
 
     if not selected_files:
-        print("[!] Không tìm thấy file nào khớp với định dạng 'product*.csv' trong thư mục.")
+        print("[!] Không tìm thấy file nào khớp với định dạng 'products*.csv' trong thư mục.")
         return
 
     print(f"[*] Đã chọn {len(selected_files)} file để xử lý: {selected_files}")
@@ -91,7 +122,7 @@ async def main():
     print(f"------------------------\n")
 
     if len(product_ids) == 0:
-        print("Tất cả dữ liệu trong các file này đã được cào xong!")
+        print("[*] Tất cả dữ liệu trong các file này đã được cào xong!")
         return
 
     # Khởi tạo 2 Queue
@@ -108,7 +139,7 @@ async def main():
         # 1. Khởi chạy duy nhất 1 task ghi file
         writer_task = asyncio.create_task(file_writer(result_queue, chunk_size=chunk_size))
 
-        # 2. Khởi chạy 50 tasks worker tải dữ liệu
+        # 2. Khởi chạy các tasks worker tải dữ liệu
         workers = []
         for i in range(concurrency_limit):
             task = asyncio.create_task(worker(i, job_queue, result_queue, session))
@@ -118,7 +149,7 @@ async def main():
             # 3. Chờ cho đến khi TẤT CẢ ID trong job_queue được lấy và xử lý xong
             await job_queue.join()
 
-            # 4. Chờ cho đến khi TẤT CẢ kết quả trong result_queue được ghi ra file
+            # 4. Chờ cho đến khi TẤT CẢ kết quả trong result_queue được đẩy vào hàm ghi
             await result_queue.join()
 
             # 5. Gửi tín hiệu (None) để báo cho file_writer biết đã hết việc và tự kết thúc
@@ -126,7 +157,7 @@ async def main():
             await writer_task
 
         except asyncio.CancelledError:
-            # Bắt tín hiệu khi tiến trình bị ngắt đột ngột (do Ctrl+C hoặc file test)
+            # Bắt tín hiệu khi tiến trình bị ngắt đột ngột
             print("\n[Cảnh báo] Tiến trình bị ngắt! Đang dọn dẹp bộ nhớ...")
             raise
 

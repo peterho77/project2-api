@@ -1,0 +1,11 @@
+# Cấu hình API
+API_URL: "https://api.tiki.vn/product-detail/api/v1/products/{}"
+CONCURRENCY_LIMIT: 55
+CHUNK_SIZE: 1000
+
+# Cấu hình File
+CSV_COLUMN_NAME: "id"
+TEST_CSV: "test_products.csv"
+TEST_LOG: "test_processed_ids.txt"
+PROCESSED_FILE: "processed_ids.txt"
+FAILED_FILE: "failed_ids.txt"

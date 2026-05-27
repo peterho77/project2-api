@@ -1,0 +1,18 @@
+# ==========================================
+# 🌐 CORE: Xử lý mạng và Bất đồng bộ (Async)
+# ==========================================
+aiohttp==3.9.5          # Gọi API HTTP bất đồng bộ tốc độ cao
+aiofiles==23.2.1        # Đọc/ghi file JSON, CSV bất đồng bộ không chặn luồng
+
+# ==========================================
+# 📊 DATA PROCESSING: Xử lý Dữ liệu & Cấu trúc
+# ==========================================
+pandas==2.2.2           # Đọc, gom nhóm và trích xuất cột từ file CSV
+selectolax==0.3.21      # Phân tích cú pháp (Parse) và làm sạch HTML siêu tốc cực nhẹ
+
+# ==========================================
+# 🛠️ UTILITIES: Công cụ hỗ trợ & Cấu hình
+# ==========================================
+fake-useragent==1.5.1   # Giả lập User-Agent của trình duyệt để bypass bot
+PyYAML==6.0.1           # Đọc file cấu hình hệ thống config.yaml
+python-dotenv==1.0.1    # Đọc biến môi trường bảo mật từ file .env
