@@ -9,7 +9,7 @@ from config.settings import config
 from selectolax.parser import HTMLParser
 
 # config variable
-processed_file=config.get("PROCESSED_FILE")
+success_file=config.get("SUCCESS_FILE")
 failed_file=config.get("FAILED_FILE")
 
 def clean_description(html_content):
@@ -80,15 +80,15 @@ async def file_writer(result_queue, chunk_size=1000):
 
         # 2. Lưu ID thành công vào processed_ids.csv
         if succ_ids:
-            processed_saved = os.path.join(output_dir, processed_file)
-            async with aiofiles.open(processed_saved, mode='a', encoding='utf-8') as f:
+            saving_success_file = os.path.join(output_dir, success_file)
+            async with aiofiles.open(saving_success_file, mode='a', encoding='utf-8') as f:
                 for pid in succ_ids:
                     await f.write(f"{pid}\n")
 
         # 3. Lưu ID thất bại vào failed_ids.csv
         if fail_ids:
-            failed_saved = os.path.join(output_dir, failed_file)
-            async with aiofiles.open(failed_saved, mode='a', encoding='utf-8') as f:
+            saving_failed_file = os.path.join(output_dir, failed_file)
+            async with aiofiles.open(saving_failed_file, mode='a', encoding='utf-8') as f:
                 for pid in fail_ids:
                     await f.write(f"{pid}\n")
 

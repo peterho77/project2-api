@@ -16,7 +16,7 @@ column = config.get("CSV_COLUMN_NAME")
 chunk_size = int(config.get("CHUNK_SIZE", 1000))
 concurrency_limit = int(config.get("CONCURRENCY_LIMIT"))
 api_url = config.get("API_URL")
-processed_file = config.get("PROCESSED_FILE")
+success_file = config.get("SUCCESS_FILE")
 failed_file = config.get("FAILED_FILE")
 
 def get_handled_ids(file_paths):
@@ -98,7 +98,7 @@ async def main():
 
     print(f"[*] Đã chọn {len(selected_files)} file để xử lý: {selected_files}")
 
-    # 5. GOM DỮ LIỆU TỪ TẤT CẢ CÁC FILE ĐÃ CHỌN
+    # 5. GOM DỮ LIỆU TỪ TẤT CẢ CÁC FILE INPUT
     all_product_ids = []
     for file in selected_files:
         try:
@@ -108,69 +108,80 @@ async def main():
         except Exception as e:
             print(f"[!] Lỗi đọc file {file}: {e}")
 
-    # Lọc ID trùng lặp nếu lỡ có 1 sản phẩm nằm ở 2 file CSV khác nhau
+    # Lọc trùng lặp file gốc
     all_product_ids = list(dict.fromkeys(all_product_ids))
 
-    # 6. LỌC CÁC ID ĐÃ ĐƯỢC CÀO TỪ TRƯỚC (CHECKPOINT)
-    handled_ids = get_handled_ids([processed_file, failed_file])
-    product_ids = [pid for pid in all_product_ids if pid not in handled_ids]
+    # 6. GIAI ĐOẠN 1: CHUẨN BỊ DỮ LIỆU MỚI
+    processed_ids = get_handled_ids([success_file,failed_file])
+    new_ids = [pid for pid in all_product_ids if pid not in processed_ids]
 
-    print(f"\n--- THỐNG KÊ DỮ LIỆU ---")
-    print(f"Tổng số ID trong {len(selected_files)} file: {len(all_product_ids)}")
-    print(f"Đã xử lý trước đó: {len(handled_ids)}")
-    print(f"Số ID thực tế cần chạy tiếp: {len(product_ids)}")
-    print(f"------------------------\n")
-
-    if len(product_ids) == 0:
-        print("[*] Tất cả dữ liệu trong các file này đã được cào xong!")
-        return
-
-    # Khởi tạo 2 Queue
-    job_queue = asyncio.Queue()
-    result_queue = asyncio.Queue()
-
-    # Nhồi toàn bộ ID vào job_queue
-    for pid in product_ids:
-        job_queue.put_nowait(pid)
+    print(f"\n--- GIAI ĐOẠN 1: CÀO DỮ LIỆU MỚI ---")
+    print(f"Tổng số ID trong {len(selected_files)} file input: {len(all_product_ids)}")
+    print(f"Đã xử lý thành công trước đó: {len(processed_ids)}")
+    print(f"Số ID mới cần cào: {len(new_ids)}")
+    print(f"------------------------------------\n")
 
     connector = aiohttp.TCPConnector(limit=concurrency_limit, ttl_dns_cache=300)
 
     async with aiohttp.ClientSession(connector=connector) as session:
-        # 1. Khởi chạy duy nhất 1 task ghi file
-        writer_task = asyncio.create_task(file_writer(result_queue, chunk_size=chunk_size))
 
-        # 2. Khởi chạy các tasks worker tải dữ liệu
-        workers = []
-        for i in range(concurrency_limit):
-            task = asyncio.create_task(worker(i, job_queue, result_queue, session))
-            workers.append(task)
+        # --- HÀM TÁI SỬ DỤNG ĐỂ CHẠY TIẾN TRÌNH ---
+        async def run_engine(ids_list, phase_name):
+            if not ids_list:
+                print(f"[*] {phase_name}: Không có ID nào cần chạy.")
+                return
 
-        try:
-            # 3. Chờ cho đến khi TẤT CẢ ID trong job_queue được lấy và xử lý xong
-            await job_queue.join()
+            print(f"[*] Bắt đầu {phase_name} với {len(ids_list)} ID...")
+            job_queue = asyncio.Queue()
+            result_queue = asyncio.Queue()
 
-            # 4. Chờ cho đến khi TẤT CẢ kết quả trong result_queue được đẩy vào hàm ghi
-            await result_queue.join()
+            # Nhồi ID vào queue
+            for pid in ids_list:
+                job_queue.put_nowait(pid)
 
-            # 5. Gửi tín hiệu (None) để báo cho file_writer biết đã hết việc và tự kết thúc
-            await result_queue.put(None)
-            await writer_task
+            writer_task = asyncio.create_task(file_writer(result_queue, chunk_size=chunk_size))
+            workers = []
+            for i in range(concurrency_limit):
+                task = asyncio.create_task(worker(i, job_queue, result_queue, session))
+                workers.append(task)
 
-        except asyncio.CancelledError:
-            # Bắt tín hiệu khi tiến trình bị ngắt đột ngột
-            print("\n[Cảnh báo] Tiến trình bị ngắt! Đang dọn dẹp bộ nhớ...")
-            raise
+            try:
+                await job_queue.join()
+                await result_queue.join()
+                await result_queue.put(None)
+                await writer_task
+            except asyncio.CancelledError:
+                print(f"\n[Cảnh báo] {phase_name} bị ngắt! Đang dọn dẹp...")
+                raise
+            finally:
+                for w in workers:
+                    if not w.done():
+                        w.cancel()
+                if not writer_task.done():
+                    writer_task.cancel()
+            print(f"[-] Hoàn tất {phase_name}.")
 
-        finally:
-            # QUAN TRỌNG NHẤT: Tiêu diệt toàn bộ worker và writer dở dang
-            for w in workers:
-                if not w.done():
-                    w.cancel()
+        # -----------------------------------------
 
-            if not writer_task.done():
-                writer_task.cancel()
+        # THỰC THI GIAI ĐOẠN 1
+        await run_engine(new_ids, "GIAI ĐOẠN 1 (File Data Mới)")
 
-    print("[-] Hoàn tất tiến trình cào dữ liệu.")
+        print(f"\n--- GIAI ĐOẠN 2: CHẠY LẠI CÁC ID LỖI (RETRY) ---")
+
+        # QUAN TRỌNG: Cần đọc lại 2 file này từ ổ cứng vì Giai đoạn 1 vừa ghi thêm data vào chúng
+        updated_processed_ids = get_handled_ids([processed_file])
+        failed_ids = get_handled_ids([failed_file])
+
+        # Lấy những ID nằm trong failed_ids nhưng chưa có trong danh sách thành công
+        retry_ids = [pid for pid in failed_ids if pid not in updated_processed_ids]
+
+        print(f"Số ID thất bại cần chạy lại: {len(retry_ids)}")
+        print(f"------------------------------------------------\n")
+
+        # THỰC THI GIAI ĐOẠN 2
+        await run_engine(retry_ids, "GIAI ĐOẠN 2 (File Data Lỗi)")
+
+    print("\n[====== HOÀN TẤT TOÀN BỘ TIẾN TRÌNH ======]")
 
 if __name__ == "__main__":
     # Cài đặt Policy này để tránh lỗi "Event loop is closed" nếu bạn đang dùng Windows

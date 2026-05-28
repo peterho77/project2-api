@@ -9,8 +9,6 @@ ua = UserAgent()
 
 # config variable
 api_url=config.get("API_URL")
-processed_file=config.get("PROCESSED_FILE")
-failed_file=config.get("FAILED_FILE")
 
 # Sử dụng User-Agent thực để bypass các bộ lọc bot cơ bản
 HEADERS = {
