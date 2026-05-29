@@ -6,6 +6,8 @@ CHUNK_SIZE: 1000
 # Cấu hình File
 CSV_COLUMN_NAME: "id"
 TEST_CSV: "test_products.csv"
-TEST_LOG: "test_processed_ids.txt"
-SUCCESS_FILE: "success_ids.txt"
-FAILED_FILE: "failed_ids.txt"
+TEST_LOG: "test_processed_ids.csv"
+SUCCESS_FILE: "success_ids.csv"
+FAILED_FILE: "failed_ids.csv"
+NUM_FILES_TO_RUN: 2
+MAX_FAIL_IDS_LIMIT: 200

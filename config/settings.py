@@ -3,11 +3,10 @@ import os
 
 # 1. Tìm đường dẫn tuyệt đối đến thư mục gốc của dự án
 # __file__ là đường dẫn của file settings.py hiện tại
-# Dùng dirname 2 lần để lùi từ /config/settings.py ra thư mục gốc
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # 2. Tạo đường dẫn chính xác đến file config.yaml
-CONFIG_PATH = os.path.join(BASE_DIR, 'config.yaml')
+CONFIG_PATH = os.path.join(CURRENT_DIR, 'config.yaml')
 
 def load_config(path):
     """Hàm đọc file YAML và trả về Dictionary."""

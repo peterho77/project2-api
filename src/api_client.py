@@ -1,5 +1,6 @@
 import asyncio
 import random
+import logging
 
 from config.settings import config
 from fake_useragent import UserAgent
@@ -53,23 +54,50 @@ async def fetch_product_info(session, product_id, max_retries=3):
                         "images_url": images_url
                     }
 
-                # Gửi lại request nếu response status khác 200 (429,404,....)
-                else:
-                    # NẾU BỊ 429: Tính toán thời gian nghỉ dài hơn sau mỗi lần thất bại (Exponential Backoff)
-                    wait_time = (2 ** attempt) + random.uniform(0, 1)  # Ví dụ: 1s, 2s, 4s...
-                    print(
-                        f"[!] Bị 429 ở ID {product_id}. Đang ngủ {wait_time:.1f}s trước khi thử lại (Lần {attempt + 1})...")
+                # TRƯỜNG HỢP 2: LỖI 404 (Sản phẩm không tồn tại / Bị xóa)
+                elif response.status == 404:
+                    # Lỗi này có thử lại cũng vô ích -> Trả về lỗi luôn để tiết kiệm thời gian
+                    msg = f"Lỗi 404 ở ID {product_id} - Không tồn tại."
+                    # print(f"[-] {msg}")
+                    logging.warning(msg)
+                    return {"error": True, "status_code": 404, "id": product_id}
+
+                # TRƯỜNG HỢP 3: LỖI 429 (Bị chặn do quá tải / Rate Limit)
+                elif response.status == 429:
+                    # Tăng thời gian chờ lên theo cấp số nhân (Exponential Backoff)
+                    wait_time = (2 ** attempt) + random.uniform(1, 2)
+                    msg = f"Bị 429 ở ID {product_id}. Đang ngủ {wait_time:.1f}s (Lần {attempt + 1})..."
+                    # print(f"[!] {msg}")
+                    logging.warning(msg)
                     await asyncio.sleep(wait_time)
-                    continue  # Quay lại đầu vòng lặp để gửi lại request
+                    continue  # Quay lại đầu vòng lặp để thử lại
 
+                # TRƯỜNG HỢP 4: CÁC LỖI HTTP KHÁC (500, 502, 503...)
+                else:
+                    msg = f"Lỗi HTTP {response.status} ở ID {product_id} (Lần {attempt + 1})"
+                    # print(f"[!] {msg}")
+                    logging.warning(msg)
+                    await asyncio.sleep(2.0)
+                    continue
+
+        # TRƯỜNG HỢP 5: LỖI TIMEOUT (Chờ quá 15 giây không thấy phản hồi)
         except asyncio.TimeoutError:
-            print(f"[!] Timeout khi tải ID {product_id} (Lần {attempt + 1})")
-            await asyncio.sleep(1)  # Nghỉ 1s rồi thử lại
+            msg = f"Timeout khi tải ID {product_id} (Lần {attempt + 1})"
+            #print(f"[!] {msg}")
+            logging.warning(msg)
+            await asyncio.sleep(1.0)
             continue
+        # TRƯỜNG HỢP 6: LỖI CRASH NGOẠI LỆ (Sai cấu trúc JSON, đứt mạng đột ngột...)
         except Exception as e:
-            print(f"[!] Lỗi ngoại lệ ID {product_id}: {e}")
-            return None
+            msg = f"Lỗi Crash ngoại lệ ID {product_id}: {e}"
+            #print(f"[!] {msg}")
+            logging.error(msg)
+            # Lỗi dạng này thường do dữ liệu dị dạng, trả về lỗi ngay không cần Retry
+            return {"error": True, "status_code": "FATAL_ERROR", "id": product_id, "details": str(e)}
 
-    # Nếu đã thử hết max_retries mà vẫn thất bại
-    print(f"[-] Bỏ qua ID {product_id} sau {max_retries} lần thử thất bại.")
-    return None
+    # KẾT THÚC VÒNG LẶP: Nếu đã thử hết số lần (max_retries) mà vẫn bị continue xuống tới đây
+    msg = f"Bỏ qua ID {product_id} do đã cạn kiệt {max_retries} lần thử."
+    #print(f"[-] {msg}")
+    logging.error(msg)
+
+    return {"error": True, "status_code": "EXHAUSTED", "id": product_id}

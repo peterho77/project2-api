@@ -11,6 +11,12 @@ from selectolax.parser import HTMLParser
 # config variable
 success_file=config.get("SUCCESS_FILE")
 failed_file=config.get("FAILED_FILE")
+max_fail_ids_limit=config.get("MAX_FAIL_IDS_LIMIT")
+
+# Lấy thư mục hiện tại chứa file code này (src)
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+# Lùi ra một cấp về thư mục gốc
+BASE_DIR = os.path.dirname(CURRENT_DIR)
 
 def clean_description(html_content):
     """
@@ -31,7 +37,15 @@ async def file_writer(result_queue, chunk_size=1000):
     chunk_index = 1
 
     # Tìm tất cả các file có tiền tố products_chunk_ và đuôi .json
-    existing_files = glob.glob("products_chunk_*.json")
+    output_dir = os.path.join(BASE_DIR, "data", "output")
+    products_dir = os.path.join(output_dir, "products")
+
+    # Đảm bảo thư mục tồn tại để glob không bị lỗi
+    os.makedirs(products_dir, exist_ok=True)
+
+    # 2. Quét bằng glob trong đúng thư mục products_dir
+    search_pattern = os.path.join(products_dir, "products_chunk_*.json")
+    existing_files = glob.glob(search_pattern)
 
     if existing_files:
         max_idx = 0
@@ -65,7 +79,7 @@ async def file_writer(result_queue, chunk_size=1000):
 
     async def save_data(js_buf, succ_ids, fail_ids, index):
         # Định nghĩa các đường dẫn thư mục chuẩn
-        output_dir = os.path.join("data", "output")
+        output_dir = os.path.join(BASE_DIR, "data", "output")
         products_dir = os.path.join(output_dir, "products")
 
         # Tự động tạo thư mục nếu chưa tồn tại (tránh lỗi FileNotFoundError)
@@ -112,19 +126,26 @@ async def file_writer(result_queue, chunk_size=1000):
         else:
             failed_ids.append(product_id)
 
-        # Kiểm tra tổng số lượng ID đã xử lý (Cả thành công + thất bại)
-        total_processed = len(success_ids) + len(failed_ids)
+            # ---------------------------------------------------------
+            # CƠ CHẾ 1: Gom đủ 1000 data thành công -> Lưu JSON & xả toàn bộ
+            # ---------------------------------------------------------
+            if len(buffer) >= chunk_size:
+                # Lưu toàn bộ (thành công + lỗi nếu có)
+                await save_data(buffer, success_ids, failed_ids, chunk_index)
 
-        if total_processed >= chunk_size:
-            await save_data(buffer, success_ids, failed_ids, chunk_index)
-
-            # Chỉ tăng số thứ tự file lên 1 NẾU thực sự có file JSON được tạo ra
-            if buffer:
                 chunk_index += 1
+                buffer.clear()
+                success_ids.clear()
+                failed_ids.clear()
 
-            # Xóa sạch các bộ đệm để chuẩn bị cho mảng tiếp theo
-            buffer.clear()
-            success_ids.clear()
-            failed_ids.clear()
+            # ---------------------------------------------------------
+            # CƠ CHẾ 2: Gom đủ 200 data lỗi -> Xả riêng phần lỗi (Chống tràn RAM)
+            # ---------------------------------------------------------
+            elif len(failed_ids) >= max_fail_ids_limit:
+                # Hàm save_data của bạn sẽ CHỈ ghi vào failed_ids.csv mà KHÔNG tạo file JSON
+                await save_data([], [], failed_ids, chunk_index)
+
+                # Chỉ xóa bộ đệm lỗi. Data thành công vẫn nằm im chờ đủ 1000
+                failed_ids.clear()
 
         result_queue.task_done()
