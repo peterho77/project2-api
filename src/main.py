@@ -6,6 +6,7 @@ import pandas as pd
 import os
 import logging
 import sys
+import uvloop
 
 # import from folder
 from config.settings import config
@@ -46,9 +47,6 @@ def get_handled_ids(file_names, base_dir):
     """
     handled = set()
 
-    # 1. Tạo đường dẫn tuyệt đối trỏ thẳng đến thư mục data/output/
-    output_dir = os.path.join(base_dir, "data", "output")
-
     for file_name in file_names:
         if file_name:
             # 2. Ghép nối để tạo đường dẫn tuyệt đối đến từng file cụ thể
@@ -64,6 +62,40 @@ def get_handled_ids(file_names, base_dir):
 
     return handled
 
+
+def cleanup_log_files(success_filepath, failed_filepath):
+    """
+    Hàm tổng vệ sinh: Loại bỏ ID trùng lặp trong các file log và
+    xóa các ID đã thành công khỏi danh sách thất bại.
+    """
+    print("\n[*] Đang tổng vệ sinh và tối ưu hóa các file log (Checkpoint)...")
+
+    # 1. Đọc toàn bộ ID bằng set() để tự động xóa trùng lặp (Duplicate)
+    success_ids = set()
+    failed_ids = set()
+
+    if os.path.exists(success_filepath):
+        with open(success_filepath, 'r', encoding='utf-8') as f:
+            success_ids.update(line.strip() for line in f if line.strip())
+
+    if os.path.exists(failed_filepath):
+        with open(failed_filepath, 'r', encoding='utf-8') as f:
+            failed_ids.update(line.strip() for line in f if line.strip())
+
+    # 2. Lọc thông minh: Nếu 1 ID nằm trong failed, nhưng sau đó đã lọt vào success (do Retry)
+    # thì loại bỏ nó khỏi danh sách failed (Dùng phép trừ tập hợp A - B)
+    true_failed_ids = failed_ids - success_ids
+
+    # 3. Ghi đè (mode='w') lại file thật sạch sẽ
+    with open(success_filepath, 'w', encoding='utf-8') as f:
+        for pid in success_ids:
+            f.write(f"{pid}\n")
+
+    with open(failed_filepath, 'w', encoding='utf-8') as f:
+        for pid in true_failed_ids:
+            f.write(f"{pid}\n")
+
+    print(f"[+] Dọn dẹp xong! File success: {len(success_ids)} ID | File failed: {len(true_failed_ids)} ID.")
 
 async def progress_reporter(progress_dict, total_ids):
     """Task chạy ngầm để in tiến độ ra màn hình mỗi 0.5 giây."""
@@ -81,11 +113,7 @@ async def progress_reporter(progress_dict, total_ids):
 
     except asyncio.CancelledError:
         pass  # Bỏ qua khi tiến trình bị ngắt
-    finally:
-        # In chốt hạ 100% khi vòng lặp kết thúc và xuống dòng (\n)
-        if total_ids > 0:
-            sys.stdout.write(f"\r[>] Tiến độ: {total_ids}/{total_ids} ID (100.00%) - HOÀN TẤT!          \n")
-            sys.stdout.flush()
+
 
 async def worker(worker_id, job_queue, result_queue, session, error_summary, progress_dict):
     """Worker lấy ID từ job_queue, tải dữ liệu, và đẩy vào result_queue."""
@@ -216,7 +244,12 @@ async def main():
     print(f"Số ID mới cần cào: {len(new_ids)}")
     print(f"------------------------------------\n")
 
-    connector = aiohttp.TCPConnector(limit=concurrency_limit, ttl_dns_cache=300)
+    connector = aiohttp.TCPConnector(
+        limit=concurrency_limit,
+        limit_per_host=0,
+        force_close=False,
+        ttl_dns_cache=600
+    )
 
     # 1. TẠO "GIỎ" CHỨA THỐNG KÊ LỖI
     error_summary = {}
@@ -254,6 +287,9 @@ async def main():
                 await result_queue.join()
                 await result_queue.put(None)
                 await writer_task
+
+                sys.stdout.write(f"\r[>] Tiến độ: {total_ids}/{total_ids} ID (100.00%) - HOÀN TẤT!          \n")
+                sys.stdout.flush()
             except asyncio.CancelledError:
                 print(f"\n[Cảnh báo] {phase_name} bị ngắt! Đang dọn dẹp...")
                 raise
@@ -286,6 +322,12 @@ async def main():
         # THỰC THI GIAI ĐOẠN 2
         await run_engine(retry_ids, "GIAI ĐOẠN 2 (File Data Lỗi)")
 
+    saving_success_file = os.path.join(output_dir, success_file)
+    saving_failed_file = os.path.join(output_dir, failed_file)
+
+    # GỌI HÀM DỌN DẸP
+    cleanup_log_files(saving_success_file, saving_failed_file)
+
     print("\n[====== HOÀN TẤT TOÀN BỘ TIẾN TRÌNH ======]")
 
     if not error_summary:
@@ -311,7 +353,9 @@ async def main():
 
 if __name__ == "__main__":
     # Cài đặt Policy này để tránh lỗi "Event loop is closed" nếu bạn đang dùng Windows
-    if os.name == 'nt':
+    if os.name != 'nt':
+        asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
+    else:
         asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
     start_time = time.time()
