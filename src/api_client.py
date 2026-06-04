@@ -26,6 +26,8 @@ HEADERS = {
     "Sec-Fetch-Site": "same-site",
 }
 
+detail_logger = logging.getLogger("detail")
+
 async def fetch_product_info(session, product_id, max_retries=3):
     """Gửi request lấy thông tin của 1 sản phẩm."""
     for attempt in range(max_retries):
@@ -59,7 +61,7 @@ async def fetch_product_info(session, product_id, max_retries=3):
                     # Lỗi này có thử lại cũng vô ích -> Trả về lỗi luôn để tiết kiệm thời gian
                     msg = f"Lỗi 404 ở ID {product_id} - Không tồn tại."
                     # print(f"[-] {msg}")
-                    logging.warning(msg)
+                    detail_logger.warning(msg)
                     return {"error": True, "status_code": 404, "id": product_id}
 
                 # TRƯỜNG HỢP 3: LỖI 429 (Bị chặn do quá tải / Rate Limit)
@@ -68,7 +70,7 @@ async def fetch_product_info(session, product_id, max_retries=3):
                     wait_time = (2 ** attempt) + random.uniform(1, 2)
                     msg = f"Bị 429 ở ID {product_id}. Đang ngủ {wait_time:.1f}s (Lần {attempt + 1})..."
                     # print(f"[!] {msg}")
-                    logging.warning(msg)
+                    detail_logger.warning(msg)
                     await asyncio.sleep(wait_time)
                     continue  # Quay lại đầu vòng lặp để thử lại
 
@@ -76,7 +78,7 @@ async def fetch_product_info(session, product_id, max_retries=3):
                 else:
                     msg = f"Lỗi HTTP {response.status} ở ID {product_id} (Lần {attempt + 1})"
                     # print(f"[!] {msg}")
-                    logging.warning(msg)
+                    detail_logger.warning(msg)
                     await asyncio.sleep(2.0)
                     continue
 
@@ -84,20 +86,20 @@ async def fetch_product_info(session, product_id, max_retries=3):
         except asyncio.TimeoutError:
             msg = f"Timeout khi tải ID {product_id} (Lần {attempt + 1})"
             #print(f"[!] {msg}")
-            logging.warning(msg)
+            detail_logger.warning(msg)
             await asyncio.sleep(1.0)
             continue
         # TRƯỜNG HỢP 6: LỖI CRASH NGOẠI LỆ (Sai cấu trúc JSON, đứt mạng đột ngột...)
         except Exception as e:
             msg = f"Lỗi Crash ngoại lệ ID {product_id}: {e}"
             #print(f"[!] {msg}")
-            logging.error(msg)
+            detail_logger.error(msg)
             # Lỗi dạng này thường do dữ liệu dị dạng, trả về lỗi ngay không cần Retry
             return {"error": True, "status_code": "FATAL_ERROR", "id": product_id, "details": str(e)}
 
     # KẾT THÚC VÒNG LẶP: Nếu đã thử hết số lần (max_retries) mà vẫn bị continue xuống tới đây
     msg = f"Bỏ qua ID {product_id} do đã cạn kiệt {max_retries} lần thử."
     #print(f"[-] {msg}")
-    logging.error(msg)
+    detail_logger.error(msg)
 
     return {"error": True, "status_code": "EXHAUSTED", "id": product_id}

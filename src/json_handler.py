@@ -11,6 +11,7 @@ from selectolax.parser import HTMLParser
 # config variable
 success_file=config.get("SUCCESS_FILE")
 failed_file=config.get("FAILED_FILE")
+dead_file=config.get("DEAD_FILE")
 max_fail_ids_limit=config.get("MAX_FAIL_IDS_LIMIT")
 
 # Lấy thư mục hiện tại chứa file code này (src)
@@ -31,7 +32,7 @@ def clean_description(html_content):
     # Xoá khoảng trắng thừa
     return re.sub(r'\n+', '\n', text).strip()
 
-async def file_writer(result_queue, chunk_size=1000):
+async def file_writer(result_queue, target_fail_file, chunk_size=1000):
     """Luồng chuyên trách gom đủ số lượng rồi ghi ra file JSON và lưu Checkpoint."""
     buffer = []
     chunk_index = 1
@@ -59,7 +60,7 @@ async def file_writer(result_queue, chunk_size=1000):
                     max_idx = idx
 
         # KẾT THÚC VÒNG LẶP, ĐÃ TÌM ĐƯỢC max_idx (Ví dụ: 144)
-        last_file = f"products_chunk_{max_idx}.json"
+        last_file = os.path.join(products_dir, f"products_chunk_{max_idx}.json")
 
         # BẮT ĐẦU KIỂM TRA DUNG LƯỢNG FILE CUỐI CÙNG
         if os.path.exists(last_file):
@@ -101,7 +102,7 @@ async def file_writer(result_queue, chunk_size=1000):
 
         # 3. Lưu ID thất bại vào failed_ids.csv
         if fail_ids:
-            saving_failed_file = os.path.join(output_dir, failed_file)
+            saving_failed_file = os.path.join(output_dir, target_fail_file)
             async with aiofiles.open(saving_failed_file, mode='a', encoding='utf-8') as f:
                 for pid in fail_ids:
                     await f.write(f"{pid}\n")

@@ -7,6 +7,7 @@ import os
 import logging
 import sys
 import uvloop
+import signal
 
 # import from folder
 from config.settings import config
@@ -21,6 +22,7 @@ concurrency_limit = int(config.get("CONCURRENCY_LIMIT"))
 api_url = config.get("API_URL")
 success_file = config.get("SUCCESS_FILE")
 failed_file = config.get("FAILED_FILE")
+dead_file = config.get("DEAD_FILE")
 num_files_to_run = config.get("NUM_FILES_TO_RUN",0)
 
 # Lấy thư mục chứa file code hiện tại (thư mục 'src')
@@ -28,17 +30,35 @@ CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # Lùi ra một cấp để về thư mục gốc của project
 BASE_DIR = os.path.dirname(CURRENT_DIR)
-
-#logging
 output_dir = os.path.join(BASE_DIR,"data", "output")
 os.makedirs(output_dir, exist_ok=True)
-logging.basicConfig(
-    filename=os.path.join(output_dir, 'report.log'),
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    encoding='utf-8'
-)
 
+#logging
+# 1. Logger dành cho detail.log (Ghi chi tiết từng lỗi ID)
+detail_logger = logging.getLogger("detail")
+detail_logger.setLevel(logging.INFO)
+detail_handler = logging.FileHandler(os.path.join(output_dir, 'detail.log'), encoding='utf-8')
+detail_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+if not detail_logger.handlers:
+    detail_logger.addHandler(detail_handler)
+
+# 2. Logger dành cho summary.log (Ghi tổng kết phiên chạy và thời gian)
+summary_logger = logging.getLogger("summary")
+summary_logger.setLevel(logging.INFO)
+summary_handler = logging.FileHandler(os.path.join(output_dir, 'summary.log'), encoding='utf-8')
+# Summary không cần in chữ "INFO", chỉ cần thời gian và thông điệp cho đẹp
+summary_handler.setFormatter(logging.Formatter('\n[%(asctime)s] %(message)s', datefmt='%d/%m/%Y %H:%M:%S'))
+if not summary_logger.handlers:
+    summary_logger.addHandler(summary_handler)
+
+# 3. Logger dành riêng cho progress.log (Ghi tiến độ định kỳ)
+progress_logger = logging.getLogger("progress")
+progress_logger.setLevel(logging.INFO)
+progress_handler = logging.FileHandler(os.path.join(output_dir, 'progress.log'), encoding='utf-8')
+# Format đơn giản: Thời gian - Thông báo
+progress_handler.setFormatter(logging.Formatter('%(asctime)s - %(message)s', datefmt='%d/%m/%Y %H:%M:%S'))
+if not progress_logger.handlers:
+    progress_logger.addHandler(progress_handler)
 
 def get_handled_ids(file_names, base_dir):
     """
@@ -63,56 +83,60 @@ def get_handled_ids(file_names, base_dir):
     return handled
 
 
-def cleanup_log_files(success_filepath, failed_filepath):
-    """
-    Hàm tổng vệ sinh: Loại bỏ ID trùng lặp trong các file log và
-    xóa các ID đã thành công khỏi danh sách thất bại.
-    """
+def cleanup_log_files(success_filepath, failed_filepath, dead_filepath):
+    """Tổng vệ sinh cả 3 file: Thành công, Lỗi (Cấp cứu), và Chết hẳn."""
     print("\n[*] Đang tổng vệ sinh và tối ưu hóa các file log (Checkpoint)...")
 
-    # 1. Đọc toàn bộ ID bằng set() để tự động xóa trùng lặp (Duplicate)
-    success_ids = set()
-    failed_ids = set()
+    success_ids, failed_ids, dead_ids = set(), set(), set()
 
-    if os.path.exists(success_filepath):
-        with open(success_filepath, 'r', encoding='utf-8') as f:
-            success_ids.update(line.strip() for line in f if line.strip())
+    def read_ids(filepath, target_set):
+        if os.path.exists(filepath):
+            with open(filepath, 'r', encoding='utf-8') as f:
+                target_set.update(line.strip() for line in f if line.strip())
 
-    if os.path.exists(failed_filepath):
-        with open(failed_filepath, 'r', encoding='utf-8') as f:
-            failed_ids.update(line.strip() for line in f if line.strip())
+    read_ids(success_filepath, success_ids)
+    read_ids(failed_filepath, failed_ids)
+    read_ids(dead_filepath, dead_ids)
 
-    # 2. Lọc thông minh: Nếu 1 ID nằm trong failed, nhưng sau đó đã lọt vào success (do Retry)
-    # thì loại bỏ nó khỏi danh sách failed (Dùng phép trừ tập hợp A - B)
-    true_failed_ids = failed_ids - success_ids
+    # Lọc thông minh (Phép trừ tập hợp)
+    true_dead_ids = dead_ids - success_ids
+    true_failed_ids = failed_ids - success_ids - true_dead_ids
 
-    # 3. Ghi đè (mode='w') lại file thật sạch sẽ
-    with open(success_filepath, 'w', encoding='utf-8') as f:
-        for pid in success_ids:
-            f.write(f"{pid}\n")
+    # Ghi đè lại file cho sạch sẽ
+    def write_ids(filepath, source_set):
+        with open(filepath, 'w', encoding='utf-8') as f:
+            for pid in source_set:
+                f.write(f"{pid}\n")
 
-    with open(failed_filepath, 'w', encoding='utf-8') as f:
-        for pid in true_failed_ids:
-            f.write(f"{pid}\n")
+    write_ids(success_filepath, success_ids)
+    write_ids(failed_filepath, true_failed_ids)
+    write_ids(dead_filepath, true_dead_ids)
 
-    print(f"[+] Dọn dẹp xong! File success: {len(success_ids)} ID | File failed: {len(true_failed_ids)} ID.")
+    print(f"[+] Dọn dẹp xong! Success: {len(success_ids)} | Cấp cứu: {len(true_failed_ids)} | Chết hẳn: {len(true_dead_ids)}.")
 
-async def progress_reporter(progress_dict, total_ids):
-    """Task chạy ngầm để in tiến độ ra màn hình mỗi 0.5 giây."""
+async def progress_reporter(progress_dict, total_ids, phase_name):
+    """Task chạy ngầm để in tiến độ ra màn hình và GHI LOG ĐỊNH KỲ vào progress.log"""
     try:
+        last_log_time = time.time()
         while progress_dict["done"] < total_ids:
             done = progress_dict["done"]
             percent = (done / total_ids) * 100 if total_ids > 0 else 0
 
-            # Ký tự \r giúp ghi đè lên dòng hiện tại.
-            # Dùng khoảng trắng thừa ở cuối để xóa sạch các ký tự cũ dài hơn nếu có.
+            # 1. In ra Terminal/Journalctl
             sys.stdout.write(f"\r[>] Tiến độ đang chạy: {done}/{total_ids} ID ({percent:.2f}%)    ")
             sys.stdout.flush()
+
+            # 2. GHI LOG ĐỊNH KỲ (Mỗi 180 giây = 3 phút ghi 1 lần)
+            current_time = time.time()
+            if current_time - last_log_time >= 180:
+                # Ghi vào progress_logger thay vì summary_logger
+                progress_logger.info(f"[{phase_name}] Đang xử lý: {done}/{total_ids} ID ({percent:.2f}%)")
+                last_log_time = current_time
 
             await asyncio.sleep(0.5)
 
     except asyncio.CancelledError:
-        pass  # Bỏ qua khi tiến trình bị ngắt
+        pass
 
 
 async def worker(worker_id, job_queue, result_queue, session, error_summary, progress_dict):
@@ -274,9 +298,9 @@ async def main():
             for pid in ids_list:
                 job_queue.put_nowait(pid)
 
-            writer_task = asyncio.create_task(file_writer(result_queue, chunk_size=chunk_size))
+            writer_task = asyncio.create_task(file_writer(result_queue, dead_file, chunk_size=chunk_size))
             # KHỞI CHẠY THƯ KÝ BÁO CÁO TIẾN ĐỘ
-            reporter_task = asyncio.create_task(progress_reporter(progress_dict, total_ids))
+            reporter_task = asyncio.create_task(progress_reporter(progress_dict, total_ids,phase_name   ))
             workers = []
             for i in range(concurrency_limit):
                 task = asyncio.create_task(worker(i, job_queue, result_queue, session, error_summary, progress_dict))
@@ -309,12 +333,16 @@ async def main():
 
         print(f"\n--- GIAI ĐOẠN 2: CHẠY LẠI CÁC ID LỖI (RETRY) ---")
 
-        # QUAN TRỌNG: Cần đọc lại 2 file này từ ổ cứng vì Giai đoạn 1 vừa ghi thêm data vào chúng
-        updated_success_ids = get_handled_ids([success_file],BASE_DIR)
-        updated_failed_ids = get_handled_ids([failed_file],BASE_DIR)
+        # Đọc lại trạng thái mới nhất từ ổ cứng
+        updated_success_ids = get_handled_ids([success_file], BASE_DIR)
+        updated_failed_ids = get_handled_ids([failed_file], BASE_DIR)
+        updated_dead_ids = get_handled_ids([dead_file], BASE_DIR)
 
-        # Lấy những ID nằm trong failed_ids nhưng chưa có trong danh sách thành công
-        retry_ids = [pid for pid in updated_failed_ids if pid not in updated_success_ids]
+        # 4. LỌC ID RETRY THÔNG MINH (Trừ đi những thằng đã thành công và những thằng đã chết hẳn)
+        retry_ids = [
+            pid for pid in updated_failed_ids
+            if pid not in updated_success_ids and pid not in updated_dead_ids
+        ]
 
         print(f"Số ID thất bại cần chạy lại: {len(retry_ids)}")
         print(f"------------------------------------------------\n")
@@ -324,18 +352,19 @@ async def main():
 
     saving_success_file = os.path.join(output_dir, success_file)
     saving_failed_file = os.path.join(output_dir, failed_file)
+    saving_dead_file = os.path.join(output_dir, dead_file)
 
     # GỌI HÀM DỌN DẸP
-    cleanup_log_files(saving_success_file, saving_failed_file)
+    cleanup_log_files(saving_success_file, saving_failed_file, saving_dead_file)
 
     print("\n[====== HOÀN TẤT TOÀN BỘ TIẾN TRÌNH ======]")
+    summary_logger.info("========= BẢNG SAO KÊ LỖI (REPORT) =========")
 
     if not error_summary:
         print("[+] Tuyệt vời! 100% dữ liệu được tải thành công, không có ID nào bị lỗi.")
-        logging.info("Báo cáo: Hoàn thành 100% không có lỗi.")
+        summary_logger.info("Tuyệt vời! Hoàn thành 100% không có ID nào bị lỗi.")
     else:
         for status, count in error_summary.items():
-            # Chuyển đổi mã lỗi thành thông điệp dễ hiểu
             if status == 404:
                 msg = f"Lỗi 404 (Sản phẩm không tồn tại / Bị xóa): {count} ID"
             elif status == 429:
@@ -348,11 +377,17 @@ async def main():
                 msg = f"Lỗi HTTP {status} (Lỗi máy chủ Tiki hoặc mạng): {count} ID"
 
             print(f"  -> {msg}")
-            logging.info(msg)  # Ghi bảng sao kê này vào file report.log luôn
+            summary_logger.info(f"-> {msg}")
     print("============================================\n")
+
+# --- HÀM BẮT TÍN HIỆU TỪ SYSTEMCTL ---
+def handle_sigterm(*args):
+    """Hàm này sẽ dịch tín hiệu Dừng của systemctl thành lỗi KeyboardInterrupt để chạy vào khối except."""
+    raise KeyboardInterrupt()
 
 if __name__ == "__main__":
     # Cài đặt Policy này để tránh lỗi "Event loop is closed" nếu bạn đang dùng Windows
+    signal.signal(signal.SIGTERM, handle_sigterm)
     if os.name != 'nt':
         asyncio.set_event_loop_policy(uvloop.EventLoopPolicy())
     else:
@@ -360,25 +395,77 @@ if __name__ == "__main__":
 
     start_time = time.time()
 
+    # === THÊM KỸ THUẬT LOCK FILE VÀO ĐÂY ===
+    lock_file_path = os.path.join(output_dir, "running.lock")
+
+    if os.path.exists(lock_file_path):
+        try:
+            # 1. Đọc thời gian bắt đầu của phiên bị chết
+            with open(lock_file_path, 'r') as f:
+                prev_start_time = float(f.read().strip())
+
+            # 2. Tìm thời điểm nó chết (Lấy thời gian file log được cập nhật lần cuối)
+            if os.path.exists(summary_logger):
+                prev_end_time = os.path.getmtime(summary_logger)
+            else:
+                prev_end_time = prev_start_time  # Fallback nếu không có file log
+
+            # 3. Tính toán thời gian chạy của phiên cũ
+            elapsed_seconds = max(0, prev_end_time - prev_start_time)
+            hours, remainder = divmod(elapsed_seconds, 3600)
+            minutes, seconds = divmod(remainder, 60)
+            time_str = f"{int(hours):02d}:{int(minutes):02d}:{int(seconds):02d}"
+
+            # 4. Ghi bù phần kết thúc cho phiên cũ trông giống hệt khối finally
+            summary_logger.info(f"Tình trạng: KẾT THÚC ĐỘT NGỘT DO SẬP NGUỒN (Khôi phục log)")
+            summary_logger.info(f"Tổng thời gian chạy: {time_str}")
+            summary_logger.info("============================================\n")
+
+        except Exception as e:
+            # Nếu file lock bị lỗi định dạng thì bỏ qua
+            print(f"[!] Lỗi khi khôi phục log phiên trước: {e}")
+            pass
+
+        # Lấy thời gian bắt đầu cho phiên MỚI này và ghi đè vào lock file
+    start_time = time.time()
+    with open(lock_file_path, 'w') as f:
+        f.write(str(start_time))
+    # =====================================================================
+
+    summary_logger.info("============================================")
+    summary_logger.info("BẮT ĐẦU PHIÊN CHẠY MỚI")
+
     try:
-        # Khởi chạy toàn bộ logic chính
         asyncio.run(main())
+        status_msg = "KẾT THÚC THÀNH CÔNG"
 
     except KeyboardInterrupt:
-        # Bắt trường hợp bạn bấm dừng bằng phím (Ctrl + C)
-        print("\n[!] Đã bấm dừng bằng tay (Ctrl+C). Tiến trình tạm nghỉ an toàn.")
+        msg = "Đã bị dừng (bằng phím Ctrl+C hoặc lệnh systemctl stop). Tiến trình tạm nghỉ an toàn."
+        print(f"\n[!] {msg}")
+        summary_logger.info(f"CẢNH BÁO: {msg}")
+        status_msg = "KẾT THÚC DO NGƯỜI DÙNG/HỆ THỐNG DỪNG"
 
     except Exception as e:
-        # Bắt tất cả các lỗi ngẫu nhiên khác (mất mạng, lỗi API văng code,...)
-        print(f"\n[!] Tiến trình dừng đột ngột do lỗi: {e}")
+        msg = f"Tiến trình dừng đột ngột do lỗi code (Crash): {e}"
+        print(f"\n[!] {msg}")
+        summary_logger.info(f"LỖI NGHIÊM TRỌNG: {msg}")
+        status_msg = "KẾT THÚC DO LỖI CRASH"
 
     finally:
         end_time = time.time()
         elapsed_seconds = end_time - start_time
-
         hours, remainder = divmod(elapsed_seconds, 3600)
         minutes, seconds = divmod(remainder, 60)
+        time_str = f"{int(hours):02d}:{int(minutes):02d}:{int(seconds):02d}"
 
         print("==================================================")
-        print(f"[*] Thời gian phiên chạy này: {int(hours):02d}:{int(minutes):02d}:{int(seconds):02d}")
+        print(f"[*] Thời gian phiên chạy này: {time_str}")
         print("==================================================")
+
+        summary_logger.info(f"Tình trạng: {status_msg}")
+        summary_logger.info(f"Tổng thời gian chạy: {time_str}")
+        summary_logger.info("============================================\n")
+
+        # Dọn dẹp lock file khi kết thúc êm đẹp (để lần sau chạy không bị báo sập nguồn)
+        if os.path.exists(lock_file_path):
+            os.remove(lock_file_path)

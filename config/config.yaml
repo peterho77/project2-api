@@ -9,5 +9,6 @@ TEST_CSV: "test_products.csv"
 TEST_LOG: "test_processed_ids.csv"
 SUCCESS_FILE: "success_ids.csv"
 FAILED_FILE: "failed_ids.csv"
-NUM_FILES_TO_RUN: 2
+DEAD_FILE: "dead_ids.csv"
+NUM_FILES_TO_RUN: 3
 MAX_FAIL_IDS_LIMIT: 200
