@@ -422,9 +422,8 @@ if __name__ == "__main__":
             summary_logger.info("============================================\n")
 
         except Exception as e:
-            # Nếu file lock bị lỗi định dạng thì bỏ qua
-            print(f"[!] Lỗi khi khôi phục log phiên trước: {e}")
-            pass
+            summary_logger.info(f"[!] QUÁ TRÌNH KHÔI PHỤC LOG GẶP LỖI CODE: {e} (Nội dung file lock: {content})")
+            summary_logger.info("============================================\n")
 
         # Lấy thời gian bắt đầu cho phiên MỚI này và ghi đè vào lock file
     start_time = time.time()
