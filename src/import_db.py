@@ -5,8 +5,12 @@ import psycopg2
 from psycopg2.extras import execute_values
 from dotenv import load_dotenv
 
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+BASE_DIR = os.path.dirname(CURRENT_DIR)
+
 # Tìm và nạp các biến từ file .env vào hệ thống
-load_dotenv()
+env_path = os.path.join(BASE_DIR, "config", ".env")
+load_dotenv(dotenv_path=env_path)
 
 # Lấy dữ liệu an toàn
 DB_CONFIG = {
@@ -17,9 +21,7 @@ DB_CONFIG = {
     "port": os.getenv("DB_PORT", "5432")
 }
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-JSON_PATTERN = os.path.join(BASE_DIR, "data", "output", "products_chunk_*.json")
-
+JSON_PATTERN = os.path.join(BASE_DIR, "data", "output", "products", "products_chunk_*.json")
 
 def process_and_insert_data():
     conn = None
@@ -33,28 +35,24 @@ def process_and_insert_data():
         # Ràng buộc điều kiện: Bắt buộc phải có file, nếu không ném AssertionError
         assert len(files) > 0, f"Không tìm thấy file nào khớp với đường dẫn: {JSON_PATTERN}"
 
+        insert_query = """
+            INSERT INTO products (id, name, url_key, price, description, images_url)
+            VALUES %s
+            ON CONFLICT (id) DO UPDATE SET
+                name = EXCLUDED.name,
+                url_key = EXCLUDED.url_key,
+                price = EXCLUDED.price,
+                description = EXCLUDED.description,
+                images_url = EXCLUDED.images_url;
+        """
+
         # Mở kết nối Database
         print("[*] Đang kết nối tới PostgreSQL...")
-        conn = psycopg2.connect(**DB_CONFIG)
 
-        # ========================================================
-        # SỬ DỤNG "WITH" CHO CONNECTION VÀ CURSOR
-        # ========================================================
         # with conn: Tự động Rollback nếu có lỗi xảy ra bên trong khối này, tự Commit nếu trơn tru.
-        with conn:
+        with psycopg2.connect(**DB_CONFIG) as conn:
             # with conn.cursor(): Tự động đóng (close) cursor khi ra khỏi khối lệnh này.
             with conn.cursor() as cursor:
-
-                insert_query = """
-                    INSERT INTO products (id, name, url_key, price, description, images_url)
-                    VALUES %s
-                    ON CONFLICT (id) DO UPDATE SET
-                        name = EXCLUDED.name,
-                        url_key = EXCLUDED.url_key,
-                        price = EXCLUDED.price,
-                        description = EXCLUDED.description,
-                        images_url = EXCLUDED.images_url;
-                """
 
                 # 2. XỬ LÝ DỮ LIỆU
                 for file_path in files:
