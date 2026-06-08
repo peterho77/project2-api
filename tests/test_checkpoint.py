@@ -10,8 +10,8 @@ TEST_FAILED_FILE = os.path.join("data", "output", "test_failed_ids.csv")
 TOTAL_IDS = 200
 
 # 2. Import from folder src
-import src.main as main_module
-from src.main import main, get_handled_ids
+import src.utils as main_module
+from src.utils import main, get_handled_ids
 
 def clean_test_environment():
     """Hàm dọn dẹp TẤT CẢ các file sinh ra trong lúc test ở thư mục data/"""

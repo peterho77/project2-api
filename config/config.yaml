@@ -4,6 +4,7 @@ CONCURRENCY_LIMIT: 55
 CHUNK_SIZE: 1000
 
 # Cấu hình File
+CSV_FILE_PATTERN: "^products\\d+\\.csv$"
 CSV_COLUMN_NAME: "id"
 TEST_CSV: "test_products.csv"
 TEST_LOG: "test_processed_ids.csv"
