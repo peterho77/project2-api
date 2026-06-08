@@ -1,4 +1,5 @@
 import sys
+import re
 import time
 import asyncio
 import logging
@@ -75,16 +76,37 @@ def create_file_logger(
 # 4. DATA TRACKING & CLEANUP (Atomic Operations)
 # ==========================================
 def _read_ids_safe(filepath: Path) -> Set[str]:
-    """Helper nội bộ đọc file an toàn (DRY principle)."""
+    """Đọc file an toàn và dùng Regex gắp ID ra khỏi các chuỗi rác dính liền."""
     if not filepath.exists():
         return set()
+
+    ids = set()
+    # Biểu thức Regex: Chỉ tìm những cụm chứa các chữ số (0-9) đứng liền nhau
+    number_pattern = re.compile(r'\d+')
+
     try:
         with open(filepath, 'r', encoding='utf-8') as f:
-            return set(line.strip() for line in f if line.strip())
+            for line in f:
+                val = line.strip()
+                if not val:
+                    continue
+
+                # Quét dòng hiện tại, bóc tách toàn bộ các cụm số ra
+                # Ví dụ: "nullnull215110865" -> trả về mảng ['215110865']
+                extracted_numbers = number_pattern.findall(val)
+
+                for num in extracted_numbers:
+                    # Thêm điều kiện an toàn: ID Tiki thường có từ 5-6 số trở lên.
+                    # Lọc bỏ các số linh tinh vô tình lọt vào.
+                    if len(num) >= 5:
+                        ids.add(num)
+
     except PermissionError as e:
-        raise FileTrackingError(f"Từ chối quyền truy cập khi đọc {filepath.name}: {e}") from e
+        print(f"[!] Từ chối quyền truy cập khi đọc {filepath.name}: {e}")
     except OSError as e:
-        raise FileTrackingError(f"Lỗi I/O khi đọc {filepath.name}: {e}") from e
+        print(f"[!] Lỗi I/O khi đọc {filepath.name}: {e}")
+
+    return ids
 
 
 def _write_ids_atomic(filepath: Path, data: Set[str]) -> None:

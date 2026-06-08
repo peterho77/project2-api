@@ -142,9 +142,19 @@ async def worker(
     assert isinstance(worker_id, int), "worker_id phải là số nguyên"
 
     while True:
+        # ==========================================
+        # BƯỚC 1: NHẬN VIỆC
+        # ==========================================
         try:
             product_id = await job_queue.get()
+        except asyncio.CancelledError:
+            # Bị hệ thống hủy khi đang đứng chờ rảnh rỗi -> Rút lui luôn, KHÔNG chạy finally
+            break
 
+        # ==========================================
+        # BƯỚC 2: XỬ LÝ VIỆC (Đã lấy được việc thì BẮT BUỘC phải có task_done)
+        # ==========================================
+        try:
             # Khối try chính gọi API
             result = await fetch_product_info(session, product_id)
 
@@ -156,7 +166,7 @@ async def worker(
                 await result_queue.put((product_id, result))
 
         except asyncio.CancelledError:
-            # Ngừng loop mượt mà khi nhận lệnh Cancel từ Orchestrator
+            # Bị hủy ngang khi đang ráng gọi API -> Nghỉ, nhưng phần finally vẫn sẽ quét dọn ID này
             break
 
         except Exception as e:
@@ -256,7 +266,7 @@ async def process_pipeline() -> None:
     all_product_ids = _extract_ids_from_csvs(selected_files, column_name)
 
     # 3. Phân luồng ID
-    processed_ids = get_handled_ids([success_file, failed_file], OUTPUT_DIR)
+    processed_ids = get_handled_ids([success_file, failed_file, dead_file], OUTPUT_DIR)
     new_ids = [pid for pid in all_product_ids if pid not in processed_ids]
 
     print(f"\n--- GIAI ĐOẠN 1: CÀO DỮ LIỆU MỚI ---")
@@ -269,8 +279,12 @@ async def process_pipeline() -> None:
     # 4. Thực thi Network Loop
     async with aiohttp.ClientSession(connector=connector) as session:
 
-        # --- PHASE 1 ---
-        await run_engine(new_ids, "GIAI ĐOẠN 1 (Data Mới)", session, error_summary, concurrency_limit)
+        # --- PHASE 1: CÀO DATA MỚI ---
+        if new_ids:
+            print(f"--- GIAI ĐOẠN 1: CÀO DỮ LIỆU MỚI ---")
+            await run_engine(new_ids, "GIAI ĐOẠN 1 (Data Mới)", session, error_summary, concurrency_limit)
+        else:
+            print("[*] Toàn bộ dữ liệu đã được quét. BỎ QUA GIAI ĐOẠN 1.")
 
         # --- PHASE 2: RETRY ---
         print(f"\n--- GIAI ĐOẠN 2: CHẠY LẠI CÁC ID LỖI (RETRY) ---")
@@ -367,6 +381,17 @@ if __name__ == "__main__":
         summary_logger.info(f"Tình trạng: {status_msg}")
         summary_logger.info(f"Tổng thời gian chạy: {time_str}")
         summary_logger.info("============================================\n")
+
+        try:
+            success_file = config.get("SUCCESS_FILE", "success.csv")
+            failed_file = config.get("FAILED_FILE", "failed.csv")
+            dead_file = config.get("DEAD_FILE", "dead.csv")
+
+            cleanup_log_files(OUTPUT_DIR / success_file, OUTPUT_DIR / failed_file, OUTPUT_DIR / dead_file)
+        except Exception as e:
+            print(f"[!] Lỗi khi dọn dẹp file log cuối phiên: {e}")
+            summary_logger.error(f"Lỗi dọn dẹp file: {e}")
+        # =========================================================
 
         # Thu dọn lock file an toàn
         try:
