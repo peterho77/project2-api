@@ -18,7 +18,7 @@ Tiki Async Data Scraper là một hệ thống thu thập dữ liệu tự độ
   * Cơ chế **Atomic Write**: Sử dụng file tạm (`.tmp`) để đảm bảo không thất thoát dữ liệu ngay cả khi hệ thống sập nguồn đột ngột.
 * **Cơ chế chịu lỗi (Fail-Safe & Recovery):** * Tích hợp Lock File (`running.lock`) để kiểm soát tiến trình độc quyền, chống chạy đè.
   * Quản lý tín hiệu an toàn (SIGTERM handling) để luồng tự dọn dẹp bộ nhớ trước khi bị hệ thống ngắt.
-* **Hệ thống Log chuyên sâu:** Phân tách rõ ràng giữa Log chi tiết (`detail.log`), Log tiến độ (`progress.log`) và Bảng sao kê lỗi (`summary.log`).
+* **Hệ thống Log chuyên sâu:** Phân tách rõ ràng giữa log chi tiết (`detail.log`), log tiến độ (`progress.log`) và bảng tổng hợp (`summary.log`).
 
 ## 🛠 Thư viện & Công nghệ sử dụng
 
@@ -40,13 +40,13 @@ Dự án sử dụng **Poetry** để quản lý môi trường ảo và các de
   cd project2-api
   ```
 
-**Bước 2: Cài đặt các thư viện phụ thuộc bằng Poetry
+**Bước 2: Cài đặt các thư viện phụ thuộc bằng Poetry**
 
   ```bash
   poetry install
   ```
 
-Bước 3: Kích hoạt môi trường ảo (Virtual Environment)
+**Bước 3: Kích hoạt môi trường ảo (Virtual Environment)**
 
   ```bash
   poetry shell
@@ -75,6 +75,7 @@ python main.py
 
 _Lưu ý: Nhấn Ctrl + C để kích hoạt cơ chế ngắt an toàn (Graceful Shutdown). Hệ thống sẽ tự động tổng hợp lỗi và dọn dẹp file trước khi thoát._
 
+
 **Cách 2:** Chạy nền qua Systemd (Production Mode trên Linux)
 Để tiến trình hoạt động độc lập không phụ thuộc vào Terminal, dự án được cấu hình sẵn dưới dạng service:
 
@@ -102,13 +103,15 @@ sudo systemctl stop tiki_scraper.service
 ```text
 project2-api/
 ├── config/
-│   └── settings.py          # Quản lý cấu hình toàn cục (Concurrency, Paths, Regex)
+│   ├──.env                  # Chứa các biến môi trường (API Keys, Passwords)
+│   ├── config.yaml          # Chứa thông số cấu hình hệ thống (Limit, File pattern, CSV column)
+│   └── settings.py          # Load và parse dữ liệu từ .env và config.yaml để cấp cho ứng dụng
 ├── data/
 │   ├── input/               # Nơi đặt các file CSV thô chứa ID cần cào (VD: products1.csv)
 │   └── output/              # Thư mục chứa kết quả và checkpoint bảo vệ tiến trình
-│       ├── success.csv      # Lưu các ID đã cào thành công
-│       ├── failed.csv       # Lưu các ID lỗi mạng/timeout (Sẽ được Retry)
-│       ├── dead.csv         # Lưu các ID đã bị hệ thống xóa vĩnh viễn (Lỗi 404)
+│       ├── success_ids.csv   # Lưu các ID đã cào thành công
+│       ├── failed_ids.csv   # Lưu các ID lỗi mạng/timeout (Sẽ được Retry)
+│       ├── dead_ids.csv     # Lưu các ID đã bị hệ thống xóa vĩnh viễn (Lỗi 404)
 │       ├── summary.log      # Bảng sao kê tổng kết số lượng sau mỗi phiên chạy
 │       ├── detail.log       # Log truy vết các lỗi Crash/Exception sâu của hệ thống
 │       └── progress.log     # Log tiến độ realtime
