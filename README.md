@@ -109,7 +109,7 @@ project2-api/
 ├── data/
 │   ├── input/               # Nơi đặt các file CSV thô chứa ID cần cào (VD: products1.csv)
 │   └── output/              # Thư mục chứa kết quả và checkpoint bảo vệ tiến trình
-│       ├── success_ids.csv   # Lưu các ID đã cào thành công
+│       ├── success_ids.csv  # Lưu các ID đã cào thành công
 │       ├── failed_ids.csv   # Lưu các ID lỗi mạng/timeout (Sẽ được Retry)
 │       ├── dead_ids.csv     # Lưu các ID đã bị hệ thống xóa vĩnh viễn (Lỗi 404)
 │       ├── summary.log      # Bảng sao kê tổng kết số lượng sau mỗi phiên chạy
@@ -120,6 +120,15 @@ project2-api/
 │   ├── api_client.py        # Chứa logic Request HTTP, xử lý Timeout & Connection Pool
 │   ├── json_handler.py      # Module thao tác Ghi/Đọc file (File Writer ẩn danh)
 │   └── utils.py             # Bộ công cụ Helper: Cleanup Logs, Regex Parser, Lock File
+├── tests/
+│   ├── __init__.py          # Khai báo biến thư mục thành module
+│   ├── conftest.py          # Chứa các Fixture dùng chung cho mọi file test
+│   ├── test_utils.py        # Test các hàm logic Regex, Set Theory, File lock
+│   └── test_api_client.py   # Test luồng gọi API bất đồng bộ
+└── .github/
+│   └── workflows/
+│       └── ci.yml           # File cấu hình CI/CD chạy tự động
+├── pytest.ini               # Cấu hình môi trường cho Pytest
 ├── main.py                  # Orchestrator trung tâm - Điều phối Queue, Worker và Phases
 ├── poetry.lock              # Khóa phiên bản tuyệt đối của toàn bộ Dependency
 ├── pyproject.toml           # File manifest của Poetry (Khai báo package, tác giả)
